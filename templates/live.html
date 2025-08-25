@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container py-4">
+  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+    <h2 class="mb-0">Live Stream & Prediction</h2>
+    <span class="badge text-bg-secondary">Synthetic demo feed</span>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-8">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="live-wrap">
+            <canvas id="liveChart"></canvas>
+          </div>
+          <div class="text-muted small mt-3 mb-0">
+            <div style="color:#37a2ff;font-weight:600">Blue = observed stream</div>
+            <div style="color:#ff6fa9;font-weight:600">Pink (●) = 1-step prediction (Linear Regression)</div>
+            <div style="color:#27ae60;font-weight:600">Green (●) = 1-step prediction (SARIMAX)</div>
+            <div style="color:#e74c3c;font-weight:600">Red (✖) = anomalies (> ±20% threshold).</div>
+            <div style="color:#f39c12;font-weight:600">Orange (○) = KNN-imputed (missing) values</div>
+            <div style="color:#000000;font-weight:600">Updated every ~2s.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h5 class="card-title mb-3">Now</h5>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Latest value</span>
+            <strong id="kpi-latest">–</strong>
+          </div>
+          <hr>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Next (LR)</span>
+            <strong id="kpi-pred-lr">–</strong>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Next (SARIMAX)</span>
+            <strong id="kpi-pred-sar">–</strong>
+          </div>
+          <hr>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Anomalies</span>
+            <strong id="kpi-anom">0</strong>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">KNN-imputed (total)</span>
+            <strong id="kpi-imputed">0</strong>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Threshold (±%)</span>
+            <strong id="kpi-thr">20</strong>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span class="text-muted">Points received</span>
+            <strong id="kpi-count">0</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h6 class="mb-2">What’s being run live?</h6>
+          <ul class="mb-0 small">
+            <li><strong>KNN Imputation:</strong> fills any missing values (k=3) while preserving correlations.</li>
+            <li><strong>Anomaly Detection:</strong> flags consecutive jumps beyond ±20% threshold (skip next to avoid bounce-back).</li>
+            <li><strong>Linear Regression:</strong> 3-step sliding window → 1-step ahead forecast.</li>
+            <li><strong>SARIMAX:</strong> ARIMA(1,1,1) non-seasonal (demo) → 1-step ahead forecast.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Chart.js (v4) -->
+<script>
+(() => {
+  const obs      = [];
+  const predLR   = [];  
+  const predSAR  = [];  
+  let anomPoints = [];  
+  let impPoints  = [];
+
+  const ctx = document.getElementById('liveChart').getContext('2d');
+  const liveChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Observed',
+          data: obs,
+          borderColor: '#37a2ff',
+          backgroundColor: 'rgba(55,162,255,.15)',
+          pointRadius: 0,
+          borderWidth: 2,
+          tension: 0.25
+        },
+        {
+          label: 'Prediction (LR, t+1)',
+          data: predLR,
+          type: 'scatter',
+          showLine: false,
+          borderColor: '#ff6fa9',
+          backgroundColor: '#ff6fa9',
+          pointRadius: 4,
+        },
+        {
+          label: 'Prediction (SARIMAX, t+1)',
+          data: predSAR,
+          type: 'scatter',
+          showLine: false,
+          borderColor: '#27ae60',
+          backgroundColor: '#27ae60',
+          pointRadius: 4,
+        },
+        {
+          label: 'Anomalies',
+          data: anomPoints,
+          type: 'scatter',
+          borderColor: '#e74c3c',
+          backgroundColor: '#e74c3c',
+          pointStyle: 'crossRot',
+          pointRadius: 7,
+          pointHoverRadius: 9,
+          pointBorderWidth: 2.5
+        },
+        {
+          label: 'Imputed (KNN)',
+          data: impPoints,
+          type: 'scatter',
+          showLine: false,
+          borderColor: '#f39c12',
+          backgroundColor: 'rgba(0,0,0,0)',  // hollow
+          pointStyle: 'circle',
+          pointRadius: 6,
+          pointHoverRadius: 8,
+          pointBorderWidth: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio:false,
+      animation: false,
+      plugins: {
+        legend: { 
+          display: false 
+        }
+      },
+      layout: {
+        padding : {
+          bottom : 0
+        }
+      },
+      scales: {
+        x: { type: 'linear', title: { display: false } },
+        y: { title: { display: false } }
+      }     
+    }
+  });
+
+  // KPI helpers
+  const fmt = (v) => (v == null || isNaN(v)) ? '–' : Number(v).toFixed(4);
+  const kpiLatest = document.getElementById('kpi-latest');
+  const kpiLR     = document.getElementById('kpi-pred-lr');
+  const kpiSAR    = document.getElementById('kpi-pred-sar');
+  const kpiAnom   = document.getElementById('kpi-anom');
+  const kpiImp    = document.getElementById('kpi-imputed');
+  const kpiThr    = document.getElementById('kpi-thr');
+  const kpiCount  = document.getElementById('kpi-count');
+
+  
+
+  // Connect SSE
+  const src = new EventSource('{{ url_for("live_stream") }}');
+  src.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+
+    if (d.fault_mode) {
+      console.warn("Injected fault:", d.fault_mode);
+      const card = document.getElementById('liveChart').closest('.card-body');
+      card.classList.add('flash-bg');
+      setTimeout(() => card.classList.remove('flash-bg'), 250);
+    }
+
+    const x = obs.length;
+
+    obs.push({x, y: d.value});
+
+    if (d.pred_lr != null)  predLR.push({x: x + 1, y: d.pred_lr});
+    if (d.pred_sar != null) predSAR.push({x: x + 1, y: d.pred_sar});
+
+    const MAX_POINTS = 600;  // ~20 minutes of data at 2s per point
+    const clamp = arr => { if (arr.length > MAX_POINTS) arr.splice(0, arr.length - MAX_POINTS); };
+
+    clamp(obs);
+    clamp(predLR);
+    clamp(predSAR);
+
+    const serverCount = d.count ?? obs.length;        
+    const clientCount = obs.length;                  
+    const offset = serverCount - clientCount;        
+
+    anomPoints = (d.anom_idx || []).map(i => {
+      const local = i - offset;                       
+      if (local < 0 || local >= clientCount) return null;
+      const p = obs[local];
+      return p ? { x: local, y: p.y } : null;
+    }).filter(Boolean);
+
+
+    if (d.imputed_idx) {
+      impPoints = (d.imputed_idx || []).map(i => {
+        const local = i - offset;
+        if (local < 0 || local >= clientCount) return null;
+        const p = obs[local];
+        return p ? { x: local, y: p.y } : null;
+      }).filter(Boolean);
+    }
+
+    
+    liveChart.data.datasets[0].data = obs;
+    liveChart.data.datasets[1].data = predLR;
+    liveChart.data.datasets[2].data = predSAR;
+    liveChart.data.datasets[3].data = anomPoints;
+    if (liveChart.data.datasets[4]) {
+      liveChart.data.datasets[4].data = impPoints;
+    }
+
+    kpiLatest.textContent = fmt(d.value);
+    kpiLR.textContent     = fmt(d.pred_lr);
+    kpiSAR.textContent    = fmt(d.pred_sar);
+    kpiAnom.textContent   = d.anom_count ?? 0;
+    kpiImp.textContent    = d.imputed_total ?? 0;
+    kpiThr.textContent    = Math.round((d.threshold ?? 0.20) * 100);
+    kpiCount.textContent  = d.count ?? obs.length;
+
+
+    liveChart.update();
+  };
+
+  src.onerror = () => {
+    console.warn('SSE connection lost… retrying');
+  };
+})();
+</script>
+
+{% endblock %}

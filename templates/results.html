@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  .plot { max-width: 100%; height: auto; border: 1px solid #eee; border-radius: .5rem; }
+  .kpi-card { border-radius: .75rem; border: 1px solid #e9ecef; padding: 1rem; background: #fff; }
+  .kpi-value { font-size: 1.5rem; font-weight: 700; }
+</style>
+
+<div class="container py-4">
+  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4">
+    <h2 class="mb-0">📊 Results for <code>{{ filename }}</code></h2>
+    <span class="badge bg-light text-dark">Analyzed column: <strong>{{ column }}</strong></span>
+  </div>
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="kpi-card text-center shadow-sm">
+        <div class="text-muted small">Rows analyzed</div>
+        <div class="kpi-value">{{ nrows }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="kpi-card text-center shadow-sm">
+        <div class="text-muted small">Missing cells ({{ column }})</div>
+        <div class="kpi-value">{{ impute.replacements|length if impute else 0 }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="kpi-card text-center shadow-sm">
+        <div class="text-muted small">Anomalies</div>
+        <div class="kpi-value">{{ anom.count }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="kpi-card">
+        <div class="text-muted small">Next (Linear Reg.)</div>
+        <div class="kpi-value">{{ '%.4f'|format(lin.prediction) }}</div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="kpi-card text-center shadow-sm">
+        <div class="text-muted small">Next (SARIMAX)</div>
+        <div class="kpi-value">{{ '%.4f'|format(sar.prediction) }}</div>
+      </div>
+    </div>
+  </div>
+  <p class="text-muted mb-4">
+    Both models predict the value for
+    <strong>row {{ next_row_one_based }}</strong>
+    (Excel line <strong>{{ excel_line_next }}</strong>) — i.e., the first row **after** the last observed value in the analyzed series.
+  </p>  
+
+  <!-- 1) KNN Imputation -->
+  {% if impute %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+        <h3 class="h5 mb-0">1) Missing-Value Imputation <span class="text-muted">(KNN, k={{ impute.n_neighbors }})</span></h3>
+        {% if impute.download_csv %}
+          <a href="{{ url_for('static', filename=impute.download_csv) }}" class="btn btn-sm btn-outline-primary">Download Filled CSV</a>
+        {% endif %}
+      </div>
+
+      {% if impute.replacements and impute.replacements|length > 0 %}
+      <details>
+        <summary class="mb-2">Show replaced values for <code>{{ column }}</code></summary>
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Excel Line</th>
+                <th>Index</th>
+                <th>Time</th>
+                <th>Original (NaN)</th>
+                <th>Imputed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in impute.replacements %}
+              <tr>
+                <td>{{ r.excel_line }}</td>
+                <td>{{ r.index }}</td>
+                <td>{{ r.time if r.time is not none else '—' }}</td>
+                <td>{{ '%.4f'|format(r.original) if r.original is not none else 'NaN' }}</td>
+                <td class="fw-semibold">{{ '%.4f'|format(r.imputed) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% else %}
+        <p class="text-muted">No missing values found in <code>{{ column }}</code>.</p>
+      {% endif %}
+
+      <!-- KNN Plots -->
+      <div class="row g-3 mt-3">
+        {% if impute.plots.series %}
+        <div class="col-lg-6">
+          <figure class="mb-0">
+            <img class="plot" src="{{ url_for('static', filename=impute.plots.series) }}" alt="Series (KNN)">
+            <figcaption class="mt-2 small text-muted">Series with KNN-imputed points highlighted.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+        {% if impute.plots.distribution %}
+        <div class="col-lg-6">
+          <figure class="mb-0">
+            <img class="plot" src="{{ url_for('static', filename=impute.plots.distribution) }}" alt="Distribution comparison">
+            <figcaption class="mt-2 small text-muted">Original vs imputed value distributions.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- 2) Anomaly Detection -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h3 class="h5 mb-3">2) Anomaly Detection</h3>
+      <p class="mb-3 text-muted">Threshold: ±{{ (anom.threshold*100)|round(0) }}% | Detected anomalies: <strong>{{ anom.count }}</strong></p>
+
+      <div class="row g-3">
+        {% if anom.plot_series %}
+        <div class="col-lg-6">
+          <figure>
+            <img class="plot" src="{{ url_for('static', filename=anom.plot_series) }}" alt="Series with anomalies">
+            <figcaption class="mt-2 small text-muted">Time series with anomalies marked.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+        {% if anom.plot_hist %}
+        <div class="col-lg-6">
+          <figure>
+            <img class="plot" src="{{ url_for('static', filename=anom.plot_hist) }}" alt="Distribution of % changes">
+            <figcaption class="mt-2 small text-muted">Histogram of % changes with threshold lines.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- 3) Linear Regression -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h3 class="h5 mb-3">3) Linear Regression (Sliding Window)</h3>
+      <p class="mb-3 text-muted">Window size: {{ lin.window_size }} | Train samples: {{ lin.n_train }} | Next prediction: <strong>{{ '%.4f'|format(lin.prediction) }}</strong></p>
+
+      <div class="row g-3">
+        {% if lin.plot_fit %}
+        <div class="col-lg-6">
+          <figure>
+            <img class="plot" src="{{ url_for('static', filename=lin.plot_fit) }}" alt="LR Fit">
+            <figcaption class="mt-2 small text-muted">Linear regression fit over recent window.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+        {% if lin.plot_next %}
+        <div class="col-lg-6">
+          <figure>
+            <img class="plot" src="{{ url_for('static', filename=lin.plot_next) }}" alt="LR Next Forecast">
+            <figcaption class="mt-2 small text-muted">Forecast for the next time step.</figcaption>
+          </figure>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- 4) SARIMAX -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h3 class="h5 mb-3">4) SARIMAX Forecast</h3>
+      <p class="text-muted mb-3">
+        Order: {{ sar.order }} | Seasonal: {{ sar.seasonal_order }} | AIC: {{ '%.2f'|format(sar.aic) }} | BIC: {{ '%.2f'|format(sar.bic) }}<br>
+        Next prediction: <strong>{{ '%.4f'|format(sar.prediction) }}</strong>
+      </p>
+
+      {% if sar.plot_next %}
+      <figure>
+        <img class="plot" src="{{ url_for('static', filename=sar.plot_next) }}" alt="SARIMAX Next Forecast">
+        <figcaption class="mt-2 small text-muted">Next value prediction using SARIMAX model.</figcaption>
+      </figure>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Back Button -->
+  <div class="text-center">
+    <a href="{{ url_for('index') }}" class="btn btn-lg btn-primary">🔄 Analyze Another File</a>
+  </div>
+
+</div>
+{% endblock %}
